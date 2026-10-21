@@ -1,0 +1,17 @@
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl git pkg-config python3 \
+    libclang-dev libglib2.0-dev libegl-dev libgbm-dev \
+    libpipewire-0.3-dev libwayland-dev libxkbcommon-dev \
+    libfontconfig1-dev libudev-dev \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+RUN curl --proto '=https' --tlsv1.2 --fail --show-error --silent \
+    https://sh.rustup.rs --output /tmp/rustup-init.sh \
+    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.99.0 --no-modify-path \
+    && chmod -R a+rX /opt/rustup /opt/cargo \
+    && rm /tmp/rustup-init.sh
+ENV PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV RUSTUP_TOOLCHAIN=1.99.0 CARGO_NET_GIT_FETCH_WITH_CLI=true
+ENV CARGO_TARGET_DIR=/tmp/capture-build-work/target
