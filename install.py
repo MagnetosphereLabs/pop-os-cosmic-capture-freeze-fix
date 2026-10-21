@@ -18,16 +18,66 @@ import subprocess
 import sys
 
 HERE = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'pop-os-cosmic-capture-freeze-fix'
-EXPECTED_SHA256 = '82e042eab98889e869258dcf170112042970f81dc0d2d6a0ded9b5bc9bb0aac5'
-EXPECTED_SIZE = '63947624'
-BINARY_URL = 'https://github.com/MagnetosphereLabs/pop-os-cosmic-capture-freeze-fix/releases/download/v1.0.0/xdg-desktop-portal-cosmic-x86_64.gz'
+RELEASE = 'v1.1.0'
+BUILDS = {'1.10.0~1791324839~24.04~9d35e63': {'sha256': '82e042eab98889e869258dcf170112042970f81dc0d2d6a0ded9b5bc9bb0aac5',
+                                     'size': 63947624,
+                                     'url': 'https://github.com/MagnetosphereLabs/pop-os-cosmic-capture-freeze-fix/releases/download/v1.0.0/xdg-desktop-portal-cosmic-x86_64.gz'},
+ '1.11.0~1792525517~24.04~f448ddf': {'sha256': 'ce61d8be1c171f275f1d97cbf367bbd204990e214e5752bd6fd0b5ac993d38e5',
+                                     'size': 64036496,
+                                     'stock_sha256': '73d5864b661f5e4d5995e788869b26a9b9091edf723277bae41f9cb38916d56b',
+                                     'url': 'https://github.com/MagnetosphereLabs/pop-os-cosmic-capture-freeze-fix/releases/download/v1.1.0/xdg-desktop-portal-cosmic-1.11.0-x86_64.gz'}}
 BINARY = None
+ARCHIVE = None
 OS_RELEASE = Path('/etc/os-release')
 TARGET = Path('/usr/libexec/xdg-desktop-portal-cosmic')
 PACKAGE = 'xdg-desktop-portal-cosmic'
-VERSION = '1.10.0~1791324839~24.04~9d35e63'
 UNIT = 'org.freedesktop.impl.portal.desktop.cosmic.service'
-POINTER = HERE / 'backup-location.txt'
+VERSION = EXPECTED_SHA256 = EXPECTED_SIZE = BINARY_URL = None
+STATE = POINTER = None
+
+def configure(version):
+    global VERSION, EXPECTED_SHA256, EXPECTED_SIZE, BINARY_URL, STATE, POINTER
+    require(version in BUILDS, 'Unsupported portal package version: ' + version)
+    build = BUILDS[version]
+    VERSION = version
+    EXPECTED_SHA256 = build['sha256']
+    EXPECTED_SIZE = int(build['size'])
+    BINARY_URL = build['url']
+    key = hashlib.sha256(version.encode()).hexdigest()[:20]
+    STATE = HERE / 'versions' / key
+    POINTER = STATE / 'backup-location.txt'
+
+def save_helper():
+    source = Path(__file__).resolve()
+    saved = HERE / 'install.py'
+    if source != saved:
+        with tempfile.NamedTemporaryFile(prefix='installer-', dir=HERE, delete=False) as stream:
+            staged = Path(stream.name)
+            try:
+                stream.write(source.read_bytes())
+                stream.flush()
+                staged.chmod(0o700)
+                staged.replace(saved)
+            finally:
+                staged.unlink(missing_ok=True)
+
+def migrate_legacy_backup():
+    legacy = HERE / 'backup-location.txt'
+    if POINTER.exists() or not legacy.is_file():
+        return
+    directory = Path(legacy.read_text().strip())
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    if manifest.get('version') != VERSION:
+        return
+    original = directory / 'original-portal'
+    require(directory.is_absolute() and directory.is_dir(), 'Legacy backup directory is unavailable.')
+    require(manifest.get('target') == str(TARGET) and manifest.get('package') == PACKAGE,
+            'Legacy backup belongs to another target.')
+    require(original.is_file() and not original.is_symlink() and
+            digest(original) == manifest.get('sha256'), 'Legacy backup checksum mismatch.')
+    STATE.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with POINTER.open('x') as stream:
+        stream.write(str(directory) + '\n')
 
 def run(args, capture=False):
     return subprocess.run([str(a) for a in args], check=True, text=True,
@@ -57,7 +107,7 @@ def check_target():
             'This release supports Pop!_OS 24.04.')
     require(TARGET.is_file() and not TARGET.is_symlink(), 'Expected regular portal binary not found.')
     version = installed_version()
-    require(version == VERSION, 'Unsupported portal package version: ' + version)
+    configure(version)
     properties = run(['/usr/bin/systemctl', '--user', 'show', UNIT,
                       '-p', 'LoadState', '-p', 'ExecStart'], True).stdout
     require('LoadState=loaded' in properties, 'The expected user service is not loaded; stop.')
@@ -77,6 +127,7 @@ def load_backup():
     manifest = json.loads((directory / 'manifest.json').read_text())
     require(manifest['target'] == str(TARGET) and manifest['version'] == VERSION,
             'The backup belongs to another target or version.')
+    require(manifest.get('package') == PACKAGE, 'Backup package mismatch.')
     original = directory / 'original-portal'
     require(original.is_file() and not original.is_symlink(), 'Original binary backup is unavailable.')
     require(digest(original) == manifest['sha256'], 'Backup checksum mismatch; stop.')
@@ -103,14 +154,17 @@ def backup():
     require(stat.S_IMODE(before.st_mode) == 0o755 and before.st_uid == 0 and before.st_gid == 0,
             'Unexpected executable ownership or permissions; stop for review.')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    directory = HERE / 'backup'
+    directory = STATE / 'backup'
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     original = directory / 'original-portal'
     original_digest = digest(TARGET)
+    stock = BUILDS[VERSION].get('stock_sha256')
+    require(stock is None or original_digest == stock, 'Executable differs from the supported stock build.')
     require(not original.is_symlink() and (not original.exists() or digest(original) == original_digest),
             'An existing backup differs from the original; it was preserved.')
     # Preserve ownership, permissions, timestamps, ACLs, and extended attributes.
     run(['/usr/bin/sudo', '--', '/usr/bin/cp', '--preserve=all', '--', TARGET, original])
+    require(installed_version() == VERSION, 'Portal package changed during backup; stop.')
     require(digest(original) == original_digest and digest(TARGET) == original_digest,
             'The file changed during backup; stop and preserve the backup for review.')
     manifest = {
@@ -145,14 +199,15 @@ def check():
     result = subprocess.run(['/usr/bin/ldd', '-r', str(binary)], text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
-    (HERE / 'link-check.txt').write_text(result.stdout)
+    (STATE / 'link-check.txt').write_text(result.stdout)
     require(result.returncode == 0 and 'not found' not in result.stdout
             and 'undefined symbol' not in result.stdout,
-            'Library compatibility check failed; see ' + str(HERE / 'link-check.txt'))
+            'Library compatibility check failed; see ' + str(STATE / 'link-check.txt'))
     print('Backup and library compatibility verified.')
     return original, manifest, binary, report
 
 def atomic_copy(source, expected_current):
+    require(installed_version() == VERSION, 'Portal package version changed; refusing replacement.')
     require(digest(TARGET) == expected_current, 'Installed executable changed; refusing to overwrite it.')
     temporary = run(['/usr/bin/sudo', '--', '/usr/bin/mktemp',
                      str(TARGET) + '.capture-fix.XXXXXX'], True).stdout.strip()
@@ -169,6 +224,7 @@ def atomic_copy(source, expected_current):
             run(['/usr/bin/sudo', '--', '/usr/bin/truncate', '-s', str(source.stat().st_size), '--', staged])
             run(['/usr/bin/sudo', '--', '/usr/bin/touch', '--reference=' + str(original), '--', staged])
         require(digest(staged) == digest(source), 'Staged executable checksum mismatch.')
+        require(installed_version() == VERSION, 'Portal package version changed during staging; stop.')
         require(digest(TARGET) == expected_current, 'Installed executable changed during staging; stop.')
         run(['/usr/bin/sudo', '--', '/usr/bin/mv', '-T', '--', staged, TARGET])
     finally:
@@ -211,9 +267,15 @@ def restore():
     print('Original portal restored and service restarted.')
 
 def download(destination):
-    request = urllib.request.Request(BINARY_URL, headers={'User-Agent': 'pop-os-cosmic-capture-freeze-fix/1.0.0'})
-    print('Downloading capture fix...')
-    with urllib.request.urlopen(request, timeout=60) as response:
+    if ARCHIVE is not None:
+        response = ARCHIVE.open('rb')
+        print('Verifying local release archive...')
+    else:
+        request = urllib.request.Request(BINARY_URL, headers={
+            'User-Agent': 'pop-os-cosmic-capture-freeze-fix/' + RELEASE})
+        print('Downloading capture fix...')
+        response = urllib.request.urlopen(request, timeout=60)
+    with response:
         with gzip.GzipFile(fileobj=response) as compressed, destination.open('xb') as target:
             size = 0
             while True:
@@ -221,17 +283,20 @@ def download(destination):
                 if not chunk:
                     break
                 size += len(chunk)
-                require(size <= int(EXPECTED_SIZE), 'Release download exceeds its expected size.')
+                require(size <= EXPECTED_SIZE, 'Release download exceeds its expected size.')
                 target.write(chunk)
-    require(destination.stat().st_size == int(EXPECTED_SIZE) and digest(destination) == EXPECTED_SHA256,
+    require(destination.stat().st_size == EXPECTED_SIZE and digest(destination) == EXPECTED_SHA256,
             'Release download checksum or size mismatch.')
     destination.chmod(0o755)
 
-def main():
-    global BINARY
+def main(argv=None):
+    global BINARY, ARCHIVE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--uninstall', action='store_true', help='Restore the saved original portal.')
-    args = parser.parse_args()
+    parser.add_argument('--archive', type=Path, help='Use a verified local release .gz archive.')
+    args = parser.parse_args(argv)
+    require(not (args.uninstall and args.archive), '--archive cannot be used with --uninstall.')
+    ARCHIVE = args.archive
     check_target()
     require(HERE.is_absolute(), 'XDG_STATE_HOME must be an absolute path.')
     HERE.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -241,29 +306,23 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Another installation or restoration is running.')
+        migrate_legacy_backup()
         if args.uninstall:
             restore()
             return
         if digest(TARGET) == EXPECTED_SHA256:
             if POINTER.exists():
                 load_backup()
+                save_helper()
                 print('Capture fix is already installed. Original backup verified.')
             else:
                 print('Capture fix is already installed. Use its existing backup to uninstall.')
             return
-        # Keep a local copy for offline restoration after the bootstrap is removed.
-        installer = Path(__file__).resolve()
-        saved = HERE / 'install.py'
-        if installer != saved:
-            content = installer.read_bytes()
-            staging = HERE / 'install.py.new'
-            staging.write_bytes(content)
-            staging.chmod(0o700)
-            staging.replace(saved)
         if not POINTER.exists():
             backup()
         else:
             load_backup()
+        save_helper()
         with tempfile.TemporaryDirectory(prefix='download-', dir=HERE) as directory:
             BINARY = Path(directory) / 'portal'
             download(BINARY)
@@ -276,3 +335,4 @@ if __name__ == '__main__':
         print(f'STOPPED: {exc}', file=sys.stderr)
         print('Restore command: /usr/bin/python3 ' + str(HERE / 'install.py') + ' --uninstall', file=sys.stderr)
         sys.exit(1)
+
