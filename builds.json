@@ -1,0 +1,16 @@
+{
+  "release": "v1.1.0",
+  "packages": {
+    "1.10.0~1791324839~24.04~9d35e63": {
+      "sha256": "82e042eab98889e869258dcf170112042970f81dc0d2d6a0ded9b5bc9bb0aac5",
+      "size": 63947624,
+      "url": "https://github.com/MagnetosphereLabs/pop-os-cosmic-capture-freeze-fix/releases/download/v1.0.0/xdg-desktop-portal-cosmic-x86_64.gz"
+    },
+    "1.11.0~1792525517~24.04~f448ddf": {
+      "sha256": "ce61d8be1c171f275f1d97cbf367bbd204990e214e5752bd6fd0b5ac993d38e5",
+      "size": 64036496,
+      "stock_sha256": "73d5864b661f5e4d5995e788869b26a9b9091edf723277bae41f9cb38916d56b",
+      "url": "https://github.com/MagnetosphereLabs/pop-os-cosmic-capture-freeze-fix/releases/download/v1.1.0/xdg-desktop-portal-cosmic-1.11.0-x86_64.gz"
+    }
+  }
+}
